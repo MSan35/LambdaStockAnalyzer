@@ -20,3 +20,6 @@ This is an AWS Lambda project designed to analyze and monitor a user-defined por
 - DynamoDB table with partition key: price_id and sort key: date.
 - 2 secondary indexes: stock_id-low_price-index and stock_id-volume-index
 
+### Email Sample
+<img width="449" alt="Screenshot 2024-12-20 at 1 17 12 PM" src="https://github.com/user-attachments/assets/46a429ee-7805-4dbb-ac37-c883c3bd90d0" />
+
