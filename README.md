@@ -7,10 +7,11 @@ This is an AWS Lambda project designed to analyze and monitor a user-defined por
 - AWS Lambda
 - AWS DynamoDB
 - AWS SNS
+- Amazon EventBridge
 - Python 3.13
 
 ### Files
-- lambdaFunction.py: Main lambda function that runs on a schedule every weekday at 8pm.
+- lambdaFunction.py: Main lambda function that runs on an EventBridge schedule every weekday at 8pm.
 - ingestion.ipynb: Data ingestion for the initial set of stock data in the form of a JSON file (stock_prices_data.json).
 - dailyIngestion.ipynb: Gets the current day's stock data in a JSON file (today_stock_prices_data.json).
 - dynamodbImporter.ipynb: Imports data from JSON file to dynamoDB table.
