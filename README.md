@@ -21,5 +21,5 @@ This is an AWS Lambda project designed to analyze and monitor a user-defined por
 - 2 secondary indexes: stock_id-low_price-index and stock_id-volume-index
 
 ### Email Sample
-<img width="449" alt="Example image" src="https://github.com/MSan35/LambdaStockAnalyzer/blob/main/example_screenshot.png" />
+<img width="449" alt="Example image" src="https://github.com/MSan35/LambdaStockAnalyzer/blob/main/StockAnalyzer/example_screenshot.png" />
 
