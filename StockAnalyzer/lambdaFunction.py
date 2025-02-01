@@ -2,170 +2,135 @@ import json
 import boto3
 import os
 from botocore.exceptions import ClientError
-from datetime import datetime
+from datetime import datetime, timedelta
+import pandas as pd
 
 dynamodb = boto3.client("dynamodb", region_name=os.getenv('AWS_REGION', 'us-east-2'))
 sns = boto3.client('sns', region_name=os.getenv('AWS_REGION', 'us-east-2'))
-# SNS_TOPIC_ARN = 
 
-def lambda_handler(event, context):
-        
-    table_name = "stock_prices"
-    stock_symbols = [
-        'NVDA',  # Nvidia
-        'AAPL',  # Apple
-        'MSFT',  # Microsoft
-        'AMZN',  # Amazon
-        'META',  # Meta
-        'GOOGL',  # Google
-        'TSLA',  # Tesla
-        'AVGO',  # Broadcom
-        'V',  # Visa
-        'MA',  # Mastercard
-        'RY',  # Royal Bank of Canada
-        'TD',  # Toronto-Dominion Bank
-        'BMO',  # Bank of Montreal
-        'BCE',  # Bell
-        'T.TO'  # Telus
-    ]
+table_name = "stock_prices"
+stock_symbols = [
+    'NVDA',  # Nvidia
+    'AAPL',  # Apple
+    'AMZN',  # Amazon
+    'GOOGL',  # Google
+    'TSLA',  # Tesla
+    'RY',  # Royal Bank of Canada
+    'TD',  # Toronto-Dominion Bank
+    'T.TO'  # Telus
+]
 
-    metrics = []
-    today = datetime.today().strftime('%Y-%m-%d')
-
-    price_change_query = f"""SELECT stock_id, closing_price, opening_price, volume FROM stock_prices WHERE "date" = ?"""
-
-    # price change for each stock
+# Get data for past 30 days
+def fetch_stock_data(start_date, end_date):
     try:
-        response = dynamodb.execute_statement(
-            Statement=price_change_query,
-            Parameters=[{'S': today}]
+        response = dynamodb.scan(
+            TableName=table_name,
+            FilterExpression="#date BETWEEN :start_date AND :end_date",
+            ExpressionAttributeNames={"#date": "date"},
+            ExpressionAttributeValues={
+                ":start_date": {"S": start_date},
+                ":end_date": {"S": end_date}
+            }
         )
-        
+
         items = response.get('Items', [])
         
-        for item in items:
-            stock_id = item['stock_id']['S']
-            opening_price = float(item['opening_price']['N'])
-            closing_price = float(item['closing_price']['N'])
-            daily_volume = float(item['volume']['N'])
-            
-            price_change = closing_price - opening_price
-            
-            metrics.append({
-                "stock_id": stock_id,
-                "price_change": price_change,
-                "volume": daily_volume
-            })
+        stock_data = [
+            {
+                "stock_id": item['stock_id']['S'],
+                "date": item['date']['S'],
+                "opening_price": float(item['opening_price']['N']),
+                "closing_price": float(item['closing_price']['N']),
+                "low_price": float(item['low_price']['N']),
+                "high_price": float(item['high_price']['N']),
+                "volume": int(item['volume']['N'])
+            }
+            for item in items
+        ]
+
+        return pd.DataFrame(stock_data)
+
+    except ClientError as e:
+        print(f"DynamoDB Query Error: {str(e)}")
+        return pd.DataFrame()
+
+# Compute stock metrics including trend analysis
+def compute_stock_metrics(df, df_trend):
+    if df.empty or df_trend.empty:
+        return pd.DataFrame()
+
+    # Compute daily price change
+    df['price_change'] = df['closing_price'] - df['opening_price']
+
+    # Monthly trends
+    trend_analysis = df_trend.groupby('stock_id').agg(
+        avg_price_change=("closing_price", lambda x: x.diff().mean()),  # Avg daily price change
+        avg_volume=("volume", "mean"),  # Avg trading volume over 30 days
+        high_30d=("high_price", "max"),  # Highest price in last 30 days
+        low_30d=("low_price", "min")  # Lowest price in last 30 days
+    ).reset_index()
+
+    # Compute daily metrics
+    daily_metrics = df[['stock_id', 'price_change', 'closing_price', 'volume']]
+
+    # Merge daily and trend metrics
+    result = daily_metrics.merge(trend_analysis, on='stock_id', how='left')
+
+    return result.fillna(0)
+
+# Create email template
+def format_email_body(df, today):
+    email_body = f"Daily Stock & 30-Day Trend Metrics for {today}\n\n"
+    email_body += "--------------------------------------------\n"
+
+    for _, row in df.iterrows():
+
+        email_body += (
+            f"Stock ID: {row['stock_id']}\n"
+            f"Today's Price Change: {row['price_change']:.2f}\n"
+            f"Today's Closing Price: {row['closing_price']:.2f}\n"
+            f"Today's Volume: {int(row['volume']):,}\n"
+            f"Avg Daily Price Change (30d): {row['avg_price_change']:.2f}\n"
+            f"Avg Volume (30d): {int(row['avg_volume']):,}\n"
+            f"30-Day High: {row['high_30d']:.2f}\n"
+            f"30-Day Low: {row['low_30d']:.2f}\n"
+            "--------------------------------------------\n"
+        )
     
-    except ClientError as e:
-        print(f"ClientError in price change query: {str(e)}")
-    except Exception as e:
-        print(f"Error in price change query: {str(e)}")
+    return email_body
 
-    # minimum price for each stock
+# Send email via SNS
+def send_email(body):
     try:
-        for symbol in stock_symbols:
-            minimum_price_query = f"""SELECT low_price FROM stock_prices."stock_id-low_price-index" WHERE stock_id = ? ORDER BY low_price"""
-
-            response = dynamodb.execute_statement(
-                Statement=minimum_price_query,
-                Parameters=[{'S': symbol}]
-            )
-
-            low_price_items = response.get('Items', [])
-            all_time_low_price = float(low_price_items[0]['low_price']['N']) if low_price_items else None
-            
-            metrics.append({
-                "stock_id": symbol,
-                "all_time_low_price": all_time_low_price
-            })
-        
-    except ClientError as e:
-        print(f"ClientError: {str(e)}")
-    except Exception as e:
-        print(f"Error: {str(e)}")
-
-    # average volume for each stock
-    try:
-        for symbol in stock_symbols:
-            avg_volume_query = f"""SELECT volume FROM stock_prices."stock_id-volume-index" WHERE stock_id = ?"""
-            
-            response = dynamodb.execute_statement(
-                Statement=avg_volume_query,
-                Parameters=[{'S': symbol}]
-            )
-            
-            volume_items = response.get('Items', [])
-            if volume_items:
-                total_volume = sum(float(item['volume']['N']) for item in volume_items)
-                average_volume = total_volume / len(volume_items)
-            else:
-                average_volume = None
-            
-            metrics.append({
-                "stock_id": symbol,
-                "average_volume": average_volume
-            })
-        
-    except ClientError as e:
-        print(f"ClientError in average volume query: {str(e)}")
-    except Exception as e:
-        print(f"Error in average volume query: {str(e)}")
-
-    # publish results to SNS
-    try:
-
-        email_body = f"Daily Stock Metrics for {today}\n\n"
-        email_body += "--------------------------------------------\n"
-        
-        stock_data = {}
-
-        for metric in metrics:
-            stock_id = metric.get('stock_id', 'N/A')
-
-            if stock_id not in stock_data:
-                stock_data[stock_id] = {
-                    'price_change': 0,
-                    'volume': 0,
-                    'average_volume': 0,
-                    'all_time_low_price': 0
-                }
-        
-            if 'price_change' in metric:
-                stock_data[stock_id]['price_change'] = metric['price_change']
-            if 'volume' in metric:
-                stock_data[stock_id]['volume'] = metric['volume']
-            if 'average_volume' in metric:
-                stock_data[stock_id]['average_volume'] = metric['average_volume']
-            if 'all_time_low_price' in metric:
-                stock_data[stock_id]['all_time_low_price'] = metric['all_time_low_price']
-        
-        for stock_id, data in stock_data.items():
-            price_change = f"{data.get('price_change', 0):.2f}"
-            volume = int(data.get('volume', 0))
-            avg_volume = int(data.get('average_volume', 0))
-            all_time_low_price = f"{data.get('all_time_low_price', 0):.2f}"
-
-            email_body += f"Stock ID: {stock_id}\n"
-            email_body += f"Price Change: {price_change}\n"
-            email_body += f"Volume: {volume}\n"
-            email_body += f"Average Volume: {avg_volume}\n"
-            email_body += f"All-Time Low Price: {all_time_low_price}\n"
-            email_body += "--------------------------------------------\n"
-        
         sns.publish(
             TopicArn=SNS_TOPIC_ARN,
-            Message=email_body,
-            Subject="Daily Stock Metrics"
+            Message=body,
+            Subject="Daily & 30-Day Stock Metrics"
         )
         print("Email sent successfully!")
-
     except ClientError as e:
-        print(f"Error in sending SNS message: {str(e)}")
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
+        print(f"SNS Error: {str(e)}")
+
+def lambda_handler(event, context):
+    today = datetime(2025, 1, 31)  # Change back to datetime.today() after demo
+    start_date = today - timedelta(days=30)
+
+    # Convert to string for DynamoDB queries
+    today_str = today.strftime('%Y-%m-%d')
+    start_date_str = start_date.strftime('%Y-%m-%d')
+
+    # Fetch data
+    df_today = fetch_stock_data(today_str, today_str)
+    df_trend = fetch_stock_data(start_date_str, today_str)
+
+    # Compute metrics
+    df_metrics = compute_stock_metrics(df_today, df_trend)
+
+    # Generate email and send report
+    email_body = format_email_body(df_metrics, today_str)
+    send_email(email_body)
 
     return {
-        "date": today,
-        "metrics": metrics
+        "date": today_str,
+        "metrics": df_metrics.to_dict(orient="records")
     }
